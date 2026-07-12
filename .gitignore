@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+devices_smartlife.json
+tuya-raw.json
+snapshot.json
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
