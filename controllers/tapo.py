@@ -1,117 +1,113 @@
 import asyncio
-from tapo import ApiClient
+from tplinkcloud import TPLinkDeviceManager, TPLinkDevice
 from config import TAPO_EMAIL, TAPO_PASSWORD
 
-_client = None
+_device_manager = None
 
-def _get_client():
-    global _client
-    if _client is None:
-        _client = ApiClient(TAPO_EMAIL, TAPO_PASSWORD)
-    return _client
+async def _get_mgr():
+    global _device_manager
+    if _device_manager is None:
+        _device_manager = TPLinkDeviceManager(TAPO_EMAIL, TAPO_PASSWORD)
+    return _device_manager
 
-DEVICE_MAP = {
-    "P115": lambda c, ip: c.p115(ip),
-    "P110": lambda c, ip: c.p110(ip),
-    "P100": lambda c, ip: c.p100(ip),
-    "P300": lambda c, ip: c.p300(ip),
-    "L530E": lambda c, ip: c.l530(ip),
-    "L520": lambda c, ip: c.l520(ip),
-    "L510": lambda c, ip: c.l510(ip),
-    "H100": lambda c, ip: c.h100(ip),
-    "S200B": lambda c, ip, child_id: c.s200(ip, child_id),
-    "T315": lambda c, ip, child_id: c.t31x(ip, child_id),
-    "T310": lambda c, ip, child_id: c.t31x(ip, child_id),
-}
-
-KNOWN_DEVICES = [
-    {"name": "P115 #1", "ip": "192.168.0.202", "model": "P115"},
-    {"name": "P110", "ip": "192.168.0.203", "model": "P110"},
-    {"name": "Bombilla L530E", "ip": "192.168.0.204", "model": "L530E"},
-    {"name": "Hub H100", "ip": "192.168.0.205", "model": "H100"},
-    {"name": "P115 #2", "ip": "192.168.0.222", "model": "P115"},
-]
-
-HUB_CHILDREN = [
-    {"name": "T315 Bano", "device_id": "802EA74076D8C1FA62B241F16BA8112224FC51B1", "hub_ip": "192.168.0.205"},
-    {"name": "T315 Sensor", "device_id": "802ED8FBA9D4B13D3EAFB0D615C2A264222C82EA", "hub_ip": "192.168.0.205"},
-    {"name": "S200B Boton Cocina", "device_id": "802E49D88141B319250801B0E33D118724486C71", "hub_ip": "192.168.0.205"},
-]
-
-async def _get_handler(device):
-    client = _get_client()
-    fn = DEVICE_MAP.get(device["model"])
-    if fn:
-        return await fn(client, device["ip"])
-    return None
+def _decode_alias(alias):
+    """The cloud API returns base64 encoded aliases, decode them"""
+    import base64
+    try:
+        return base64.b64decode(alias).decode("utf-8")
+    except:
+        return alias
 
 async def get_devices():
+    mgr = await _get_mgr()
+    devices = await mgr.get_devices()
     result = []
-    for d in KNOWN_DEVICES:
-        entry = {"name": d["name"], "ip": d["ip"], "model": d["model"], "eco": "tapo", "id": d["ip"]}
-        if d["model"] == "H100":
-            entry["sensors"] = [{"name": s["name"], "device_id": s["device_id"]} for s in HUB_CHILDREN]
+    for d in devices:
+        info = d.device_info
+        alias = _decode_alias(d.get_alias())
+        model = info.device_model
+        entry = {
+            "id": d.device_id,
+            "name": alias,
+            "ip": "",
+            "model": model,
+            "eco": "tapo",
+        }
+        if info.device_type == "SMART.TAPOHUB":
+            entry["sensors"] = await _get_hub_children(d)
         result.append(entry)
     return result
 
-async def get_device_status(ip, model):
+async def _get_hub_children(device):
+    """Try to get children from a hub device"""
+    children = []
     try:
-        d = next((x for x in KNOWN_DEVICES if x["ip"] == ip), None)
-        if not d:
-            return {"error": "Device not found"}
-        handler = await _get_handler(d)
-        if not handler:
-            return {"error": "Unsupported model"}
-        info = await handler.get_device_info()
-        result = {}
-        if hasattr(info, 'device_on'):
-            result["on"] = info.device_on
-        if hasattr(info, 'current_power') and info.current_power is not None:
-            result["power_w"] = info.current_power
-        if model == "L530E":
-            result["brightness"] = getattr(info, 'brightness', None)
-            result["hue"] = getattr(info, 'hue', None)
-            result["saturation"] = getattr(info, 'saturation', None)
+        raw = await device.get_children()
+        for child in raw:
+            info = child.get("info", {}) if isinstance(child, dict) else child
+            name = info.get("alias", info.get("name", "Sensor")) if isinstance(info, dict) else str(info)
+            cid = info.get("device_id", info.get("id", "")) if isinstance(info, dict) else ""
+            if cid:
+                children.append({"name": name, "device_id": cid})
+    except:
+        pass
+    return children
+
+async def get_status(device_id):
+    mgr = await _get_mgr()
+    devices = await mgr.get_devices()
+    d = next((x for x in devices if x.device_id == device_id), None)
+    if not d:
+        return {"error": "Device not found"}
+    try:
+        on = await d.is_on()
+        result = {"on": on}
+        if hasattr(d, "has_emeter") and d.has_emeter:
+            try:
+                info = await d.get_sys_info()
+                if info and isinstance(info, dict):
+                    result["power_w"] = info.get("power", info.get("power_mw", 0)) / 1000 if info.get("power_mw") else 0
+            except:
+                pass
         return result
     except Exception as e:
         return {"error": str(e)}
 
-async def set_power(ip, model, on):
+async def set_power(device_id, on):
+    mgr = await _get_mgr()
+    devices = await mgr.get_devices()
+    d = next((x for x in devices if x.device_id == device_id), None)
+    if not d:
+        return {"error": "Device not found"}
     try:
-        d = next((x for x in KNOWN_DEVICES if x["ip"] == ip), None)
-        if not d:
-            return {"error": "Device not found"}
-        if d["model"] == "H100":
-            return {"error": "Hub cannot be turned on/off"}
-        handler = await _get_handler(d)
         if on:
-            await handler.on()
+            await d.power_on()
         else:
-            await handler.off()
-        info = await handler.get_device_info()
-        return {"on": info.device_on}
+            await d.power_off()
+        return {"on": on}
     except Exception as e:
         return {"error": str(e)}
 
-async def get_sensors():
-    result = []
-    client = _get_client()
-    hub = await client.h100("192.168.0.205")
-    for s in HUB_CHILDREN:
-        try:
-            if s["name"].startswith("T315"):
-                sensor = await hub.t31x(s["device_id"])
-            else:
-                sensor = await hub.s200(s["device_id"])
-            info = await sensor.get_device_info()
-            entry = {"name": s["name"], "device_id": s["device_id"]}
-            if hasattr(info, 'current_temperature'):
-                entry["temperature"] = info.current_temperature
-                entry["humidity"] = info.current_humidity
-                entry["battery_low"] = info.at_low_battery if hasattr(info, 'at_low_battery') else False
-            else:
-                entry["type"] = "button"
-            result.append(entry)
-        except Exception as e:
-            result.append({"name": s["name"], "error": str(e)})
-    return result
+async def get_hub_sensors():
+    """Get temperature/humidity sensors from hubs"""
+    mgr = await _get_mgr()
+    devices = await mgr.get_devices()
+    sensors = []
+    for d in devices:
+        info = d.device_info
+        if info.device_type == "SMART.TAPOHUB":
+            try:
+                raw = await d.get_children()
+                for child in raw:
+                    if isinstance(child, dict):
+                        cid = child.get("info", {}).get("device_id", child.get("device_id", ""))
+                        cname = child.get("info", {}).get("alias", child.get("alias", "Sensor"))
+                        ctype = child.get("info", {}).get("device_type", child.get("type", ""))
+                        sensors.append({
+                            "name": _decode_alias(cname) if isinstance(cname, str) else str(cname),
+                            "device_id": cid,
+                            "type": "temperature" if "T3" in ctype else "button",
+                        })
+            except:
+                pass
+    return sensors
