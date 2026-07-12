@@ -2,6 +2,7 @@ import asyncio
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from config import get_config_status
 from controllers.smartlife import get_devices as sl_get_devices, get_status as sl_get_status, set_power as sl_set_power
 from controllers.tapo import get_devices as tp_get_devices, get_device_status as tp_get_status, set_power as tp_set_power, get_sensors as tp_get_sensors
 
@@ -61,3 +62,7 @@ async def sensors():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+@app.get("/config")
+async def config():
+    return get_config_status()
