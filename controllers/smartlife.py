@@ -5,7 +5,7 @@ import json, os, time, hashlib, hmac
 DEVICES_CACHE = []
 DEVICES_FILE = "/tmp/devices_smartlife.json" if os.name != "nt" else "devices_smartlife.json"
 
-def _get_cloud():
+def _get_cloud(device_id=""):
     region_hosts = {
         "cn": "https://openapi.tuyacn.com",
         "us": "https://openapi.tuyaus.com",
@@ -19,7 +19,7 @@ def _get_cloud():
         "apiSecret": TUYA_API_SECRET,
         "apiRegion": TUYA_REGION,
         "apiHost": region_hosts.get(TUYA_REGION, f"https://openapi.tuya{TUYA_REGION}.com"),
-        "apiDeviceID": "",
+        "apiDeviceID": device_id or "4823707870039f4f1993",
     }
     return tinytuya.Cloud(**config)
 
